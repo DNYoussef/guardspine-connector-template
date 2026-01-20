@@ -1,0 +1,62 @@
+# GuardSpine Connector Configuration
+# Copy this to config.yaml and customize
+
+connector:
+  # Connector type (github, sharepoint, google-drive, etc.)
+  type: "github"
+  # Display name for this connector
+  name: "My GitHub Connector"
+
+source:
+  # GitHub personal access token (or use GITHUB_TOKEN env var)
+  token: "${GITHUB_TOKEN}"
+
+  # Repositories to watch
+  repos:
+    - "my-org/policy-docs"
+    - "my-org/contracts"
+
+  # Poll interval in seconds (for connectors that poll)
+  poll_interval: 300
+
+output:
+  # Output mode: api, file, or webhook
+  mode: "file"
+
+  # For API mode:
+  # api_url: "http://localhost:8000/api/v1"
+  # api_key: "${GUARDSPINE_API_KEY}"
+
+  # For file mode:
+  file_path: "./bundles"
+  format: "json"  # json or zip
+
+  # For webhook mode:
+  # webhook_url: "https://my-system.com/ingest"
+  # headers:
+  #   Authorization: "Bearer ${WEBHOOK_TOKEN}"
+
+filters:
+  # Only process files matching these patterns
+  include_paths:
+    - "**/*"
+
+  # Exclude files matching these patterns
+  exclude_paths:
+    - "**/node_modules/**"
+    - "**/.git/**"
+    - "**/drafts/**"
+
+risk_mapping:
+  # Map paths to risk tiers
+  # More specific patterns should come first
+  "**/policies/**": "L3"
+  "**/contracts/**": "L4"
+  "**/finance/**": "L3"
+  "**/hr/**": "L2"
+  "**/docs/**": "L1"
+  default: "L0"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

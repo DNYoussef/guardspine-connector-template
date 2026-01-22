@@ -2,6 +2,9 @@
 
 > **Build connectors that emit verifiable evidence bundles.**
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+
 This template provides the structure for building GuardSpine connectors - sidecars that integrate with document stores, code repositories, and workflow systems to emit evidence bundles.
 
 ## Architecture
@@ -16,7 +19,7 @@ This template provides the structure for building GuardSpine connectors - sideca
                               v
                        +------------------+
                        | GuardSpine API   |
-                       | (optional)       |
+                       | (webhooks)       |
                        +------------------+
 ```
 
@@ -52,9 +55,11 @@ guardspine-connector-template/
 |   +-- base.py          # Base connector class
 |   +-- events.py        # Event types
 |   +-- bundle_emitter.py # Bundle creation
-|-- examples/
++-- examples/
 |   +-- github_connector.py
 |   +-- sharepoint_connector.py
+|   +-- jira_connector.py
+|   +-- slack_connector.py
 +-- config.example.yaml
 +-- pyproject.toml
 +-- README.md
@@ -66,14 +71,14 @@ guardspine-connector-template/
 from connector import BaseConnector, ChangeEvent, BundleEmitter
 
 class MyConnector(BaseConnector):
-    \"\"\"Connect to MySystem and emit evidence bundles.\"\"\"
+    """Connect to MySystem and emit evidence bundles."""
 
     def __init__(self, config: dict):
         super().__init__(config)
         self.client = MySystemClient(config["api_key"])
 
     async def watch_changes(self) -> AsyncIterator[ChangeEvent]:
-        \"\"\"Watch for changes and yield events.\"\"\"
+        """Watch for changes and yield events."""
         async for event in self.client.watch():
             yield ChangeEvent(
                 artifact_id=event.file_id,
@@ -84,7 +89,7 @@ class MyConnector(BaseConnector):
             )
 
     async def get_diff(self, event: ChangeEvent) -> dict:
-        \"\"\"Get the diff for a change event.\"\"\"
+        """Get the diff for a change event."""
         return await self.client.get_diff(
             event.artifact_id,
             event.from_version,
@@ -92,7 +97,7 @@ class MyConnector(BaseConnector):
         )
 
     async def get_artifact_metadata(self, artifact_id: str) -> dict:
-        \"\"\"Get artifact metadata.\"\"\"
+        """Get artifact metadata."""
         return await self.client.get_file(artifact_id)
 ```
 
@@ -109,9 +114,9 @@ source:
   api_key: "${MY_API_KEY}"  # Environment variable
 
 output:
-  mode: "api"  # or "file"
-  api_url: "http://localhost:8000/api/v1"
-  # file_path: "./bundles"  # for file mode
+  mode: "webhook"  # api | file | webhook
+  webhook_url: "http://guardspine:8000/api/v1/webhooks/my-connector"
+  api_key: "${GUARDSPINE_API_KEY}"
 
 filters:
   include_paths:
@@ -135,8 +140,21 @@ risk_mapping:
 | `file_deleted` | File removed |
 | `file_moved` | File location changed |
 | `permission_changed` | Access permissions modified |
+| `approval_requested` | Approval workflow started |
+| `approval_granted` | Approval given |
+| `approval_rejected` | Approval denied |
 
 ## Output Modes
+
+### Webhook Mode (Recommended)
+Posts events directly to GuardSpine webhook endpoint:
+```yaml
+output:
+  mode: "webhook"
+  webhook_url: "http://guardspine:8000/api/v1/webhooks/my-connector"
+  headers:
+    Authorization: "Bearer ${GUARDSPINE_API_KEY}"
+```
 
 ### API Mode
 Sends bundles directly to GuardSpine API:
@@ -156,15 +174,30 @@ output:
   format: "json"  # or "zip"
 ```
 
-### Webhook Mode
-Posts bundles to a webhook:
-```yaml
-output:
-  mode: "webhook"
-  webhook_url: "https://my-system.com/ingest"
-  headers:
-    Authorization: "Bearer ${WEBHOOK_TOKEN}"
+## Integration with GuardSpine Phase 5
+
+Connectors integrate with GuardSpine's Phase 5 webhook system:
+
+```python
+# Your connector sends events to GuardSpine
+POST /api/v1/webhooks/{connector_id}
+Content-Type: application/json
+X-Connector-Signature: sha256=...
+
+{
+  "event_type": "file_modified",
+  "artifact_id": "doc-123",
+  "from_version": "v1",
+  "to_version": "v2",
+  "metadata": {...}
+}
 ```
+
+GuardSpine processes these events and:
+- Creates/updates artifacts
+- Links to Beads (work units)
+- Triggers approval workflows
+- Creates evidence bundles
 
 ## Testing
 
@@ -177,17 +210,49 @@ guardspine-connector test --mock-events 10
 
 # Dry run (don't emit bundles)
 guardspine-connector run --dry-run
+
+# Validate config
+guardspine-connector validate --config config.yaml
 ```
 
 ## Pre-built Connectors
 
 | Connector | Status | Source |
 |-----------|--------|--------|
-| GitHub | Available | `examples/github_connector.py` |
+| GitHub | Production | `examples/github_connector.py` |
+| Jira | Production | `examples/jira_connector.py` |
+| Slack | Production | `examples/slack_connector.py` |
 | SharePoint | Template | Requires Microsoft Graph API |
 | Google Drive | Template | Requires Google API |
-| Jira | Template | Requires Atlassian API |
 | ServiceNow | Template | Requires ServiceNow API |
+| Confluence | Template | Requires Atlassian API |
+
+## Signature Verification
+
+Connectors should sign webhook payloads:
+
+```python
+import hmac
+import hashlib
+
+def sign_payload(payload: bytes, secret: str) -> str:
+    signature = hmac.new(
+        secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    return f"sha256={signature}"
+```
+
+GuardSpine verifies signatures before processing events.
+
+## Related Projects
+
+| Project | Description |
+|---------|-------------|
+| [GuardSpine](https://github.com/DNYoussef/GuardSpine) | Full governance platform |
+| [guardspine-spec](https://github.com/DNYoussef/guardspine-spec) | Bundle specification |
+| [guardspine-verify](https://github.com/DNYoussef/guardspine-verify) | Offline verifier |
 
 ## License
 

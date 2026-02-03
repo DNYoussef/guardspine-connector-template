@@ -1,8 +1,10 @@
 """
 Bundle emitter for creating evidence bundles from connector events.
+
+UPDATED: Now uses guardspine-kernel-py for canonical hash operations.
+This ensures cross-language parity with @guardspine/kernel (TypeScript).
 """
 
-import hashlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -14,6 +16,23 @@ import httpx
 
 from .events import ChangeEvent, DiffResult
 
+# Import from canonical kernel package
+try:
+    from guardspine_kernel import (
+        canonical_json,
+        compute_content_hash,
+        build_hash_chain,
+        compute_root_hash,
+        GENESIS_HASH,
+    )
+    _HAS_KERNEL = True
+except ImportError:
+    _HAS_KERNEL = False
+    # Fallback will raise error at runtime if kernel is needed
+
+
+KERNEL_VERSION = "0.2.0"
+
 
 @dataclass
 class BundleEmitter:
@@ -24,6 +43,10 @@ class BundleEmitter:
     - api: Send to GuardSpine API
     - file: Write to local filesystem
     - webhook: POST to webhook URL
+
+    SECURITY: This emitter requires guardspine-kernel-py to be installed.
+    Without the kernel, bundle creation will fail hard to prevent
+    producing bundles with incorrect hash values.
     """
 
     mode: Literal["api", "file", "webhook"]
@@ -40,6 +63,13 @@ class BundleEmitter:
             raise ValueError("file_path required for file mode")
         if self.mode == "webhook" and not self.webhook_url:
             raise ValueError("webhook_url required for webhook mode")
+
+        # SECURITY: Require kernel for hash operations
+        if not _HAS_KERNEL:
+            raise ImportError(
+                "guardspine-kernel-py is required for bundle creation. "
+                "Install with: pip install guardspine-kernel"
+            )
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "BundleEmitter":
@@ -96,42 +126,57 @@ class BundleEmitter:
         risk_tier: str,
         bead_id: Optional[str],
     ) -> dict[str, Any]:
-        """Create bundle structure from event and diff."""
+        """Create bundle structure from event and diff using kernel functions."""
         bundle_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
-        # Build evidence items
+        # Build evidence items with kernel hash computation
         items = []
+        sequence = 0
 
         # Add diff as evidence item
         if diff:
             diff_content = diff.to_dict()
             items.append({
                 "item_id": str(uuid.uuid4()),
-                "evidence_type": "diff",
-                "content_hash": self._compute_hash(diff_content),
+                "sequence": sequence,
+                "content_type": "diff",
+                "content_hash": compute_content_hash(diff_content),
                 "content": diff_content,
                 "created_at": now,
             })
+            sequence += 1
 
         # Add event as audit evidence
         event_content = event.to_dict()
         items.append({
             "item_id": str(uuid.uuid4()),
-            "evidence_type": "audit_event",
-            "content_hash": self._compute_hash(event_content),
+            "sequence": sequence,
+            "content_type": "audit_event",
+            "content_hash": compute_content_hash(event_content),
             "content": event_content,
             "created_at": now,
         })
 
-        # Build hash chain
-        hash_chain = self._build_hash_chain(items, bundle_id)
+        # Build hash chain using kernel
+        from guardspine_kernel.seal import ChainInput
+        chain_inputs = [
+            ChainInput(
+                content=item["content"],
+                content_type=item["content_type"],
+                content_id=item["item_id"],
+            )
+            for item in items
+        ]
+        chain = build_hash_chain(chain_inputs)
+        root_hash = compute_root_hash(chain)
 
-        # Compute root hash
-        root_hash = self._compute_root_hash(hash_chain["entries"])
+        # Convert chain to dict format
+        hash_chain = [link.to_dict() for link in chain]
 
         bundle = {
             "bundle_id": bundle_id,
+            "version": KERNEL_VERSION,
             "bead_id": bead_id or f"connector-{event.artifact_id}",
             "artifact_id": event.artifact_id,
             "from_version_id": event.from_version or "initial",
@@ -150,13 +195,8 @@ class BundleEmitter:
             "items": items,
             "signatures": [],  # Unsigned by default
             "immutability_proof": {
-                "proof_id": str(uuid.uuid4()),
-                "bundle_id": bundle_id,
-                "root_hash": root_hash,
-                "hash_algorithm": "sha256",
                 "hash_chain": hash_chain,
-                "verified_at": None,
-                "verification_status": "unverified",
+                "root_hash": root_hash,
             },
             "retention": {
                 "policy": "standard",
@@ -193,44 +233,6 @@ class BundleEmitter:
         }
 
         return bundle
-
-    def _compute_hash(self, content: Any) -> str:
-        """Compute SHA-256 hash of content."""
-        data = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
-        h = hashlib.sha256(data).hexdigest()
-        return f"sha256:{h}"
-
-    def _build_hash_chain(
-        self, items: list[dict[str, Any]], bundle_id: str
-    ) -> dict[str, Any]:
-        """Build hash chain from items."""
-        entries = []
-        prev_hash = None
-
-        for i, item in enumerate(items):
-            entry = {
-                "sequence_number": i,
-                "content_hash": item["content_hash"],
-                "previous_hash": prev_hash,
-                "timestamp": item["created_at"],
-                "content_type": item["evidence_type"],
-                "content_id": item["item_id"],
-            }
-            entries.append(entry)
-            prev_hash = item["content_hash"]
-
-        return {
-            "chain_id": str(uuid.uuid4()),
-            "entries": entries,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    def _compute_root_hash(self, entries: list[dict[str, Any]]) -> str:
-        """Compute Merkle root hash from chain entries."""
-        hash_values = [e["content_hash"].replace("sha256:", "") for e in entries]
-        concatenated = "".join(hash_values).encode()
-        h = hashlib.sha256(concatenated).hexdigest()
-        return f"sha256:{h}"
 
     async def _emit_to_api(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Send bundle to GuardSpine API."""

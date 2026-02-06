@@ -7,23 +7,17 @@
  */
 
 export interface HashChainLink {
-  /** SHA-256 hash of this link's content */
-  hash: string;
-  /** Hash of the previous link in the chain (null for genesis) */
-  previousHash: string | null;
-  /** ISO-8601 timestamp when this link was created */
-  timestamp: string;
+  sequence: number;
+  item_id: string;
+  content_type: string;
+  content_hash: string;
+  previous_hash: string;
+  chain_hash: string;
 }
 
 export interface ImmutabilityProof {
-  /** Schema version for the proof format */
-  version: "0.2.0";
-  /** Algorithm used for hashing (e.g. "sha256") */
-  algorithm: string;
-  /** Ordered chain of hashes proving integrity */
-  chain: HashChainLink[];
-  /** Root hash summarizing the entire bundle */
-  rootHash: string;
+  hash_chain: HashChainLink[];
+  root_hash: string;
 }
 
 export interface EvidenceItem {
@@ -41,19 +35,21 @@ export interface EvidenceItem {
   tags?: string[];
 }
 
+export interface BundleItem {
+  item_id: string;
+  sequence: number;
+  content_type: string;
+  content: Record<string, unknown>;
+  content_hash: string;
+}
+
 export interface EvidenceBundle {
-  /** Schema version -- MUST be "0.2.0" */
-  schemaVersion: "0.2.0";
-  /** Unique bundle identifier */
-  bundleId: string;
-  /** Connector that produced this bundle */
-  connectorId: string;
-  /** ISO-8601 timestamp of bundle creation */
-  createdAt: string;
-  /** Evidence items included in this bundle */
-  items: EvidenceItem[];
-  /** Cryptographic proof of bundle integrity */
-  proof: ImmutabilityProof;
+  version: "0.2.0";
+  bundle_id: string;
+  created_at: string;
+  items: BundleItem[];
+  immutability_proof: ImmutabilityProof;
+  metadata?: Record<string, unknown>;
 }
 
 /**

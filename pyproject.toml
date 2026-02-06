@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "guardspine-connector-template"
 version = "1.0.0"
-description = "Template for building GuardSpine connectors (spec v1.0.0 compatible)"
+description = "Template for building GuardSpine connectors (spec v0.2.0 compatible)"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
@@ -29,6 +29,7 @@ dependencies = [
     "httpx>=0.25",
     "pydantic>=2.0",
     "watchfiles>=0.20",
+    "guardspine-kernel>=0.2.0",
 ]
 
 [project.optional-dependencies]

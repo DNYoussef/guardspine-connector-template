@@ -1,9 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
+  BundleItem,
   ConnectorConfig,
   EvidenceBundle,
   EvidenceItem,
-  HashChainLink,
   ImmutabilityProof,
 } from "./types";
 
@@ -32,11 +32,9 @@ export class GuardSpineConnector {
 
   /**
    * Establish a connection to the external source system.
-   * Replace with real auth logic (API keys, OAuth, etc.).
+   * Override for source-specific auth/setup.
    */
   async connect(): Promise<void> {
-    // TODO: Add your authentication / connection logic here.
-    // Example: this.client = new SourceClient(this.config.apiKey);
     this.connected = true;
   }
 
@@ -44,7 +42,6 @@ export class GuardSpineConnector {
    * Gracefully tear down the connection.
    */
   async disconnect(): Promise<void> {
-    // TODO: Clean up connections, flush buffers, etc.
     this.connected = false;
   }
 
@@ -61,13 +58,10 @@ export class GuardSpineConnector {
    */
   async fetchArtifacts(since?: string): Promise<Record<string, unknown>[]> {
     this.ensureConnected();
-
-    // TODO: Replace with real data fetching.
-    // Example:
-    //   const response = await this.client.getCommits({ since });
-    //   return response.data;
-
-    return [];
+    void since;
+    throw new Error(
+      "fetchArtifacts() must be implemented by your connector subclass.",
+    );
   }
 
   /**
@@ -77,8 +71,6 @@ export class GuardSpineConnector {
   protected transformToEvidenceItems(
     artifacts: Record<string, unknown>[],
   ): EvidenceItem[] {
-    // TODO: Map each artifact to an EvidenceItem with the correct
-    // source, kind, and payload for your connector.
     return artifacts.map((artifact) => ({
       id: randomUUID(),
       source: this.config.connectorId,
@@ -94,18 +86,38 @@ export class GuardSpineConnector {
 
   /**
    * Package evidence items into a v0.2.0 EvidenceBundle with an
-   * immutability proof (hash chain).
+   * kernel-generated immutability proof.
    */
-  emitEvidenceBundle(items: EvidenceItem[]): EvidenceBundle {
-    const proof = this.buildImmutabilityProof(items);
+  async emitEvidenceBundle(items: EvidenceItem[]): Promise<EvidenceBundle> {
+    const kernel = await this.loadKernel();
+    const createdAt = new Date().toISOString();
+    const bundleId = randomUUID();
+    const draft = {
+      bundle_id: bundleId,
+      version: "0.2.0" as const,
+      created_at: createdAt,
+      items: items.map((item, index) => this.toKernelItem(item, index)),
+      metadata: {
+        connector_id: this.config.connectorId,
+      },
+    };
+    const sealed = kernel.sealBundle(draft) as {
+      items?: BundleItem[];
+      immutabilityProof?: { hashChain?: unknown[]; rootHash?: string };
+    };
 
+    if (!sealed?.items || !sealed?.immutabilityProof?.hashChain || !sealed?.immutabilityProof?.rootHash) {
+      throw new Error("Kernel sealing failed to return v0.2.0 proof data.");
+    }
+
+    const proof = this.toProof(sealed.immutabilityProof.hashChain, sealed.immutabilityProof.rootHash);
     return {
-      schemaVersion: "0.2.0",
-      bundleId: randomUUID(),
-      connectorId: this.config.connectorId,
-      createdAt: new Date().toISOString(),
-      items,
-      proof,
+      version: "0.2.0",
+      bundle_id: bundleId,
+      created_at: createdAt,
+      items: sealed.items,
+      immutability_proof: proof,
+      metadata: draft.metadata,
     };
   }
 
@@ -115,38 +127,51 @@ export class GuardSpineConnector {
   async collectAndEmit(since?: string): Promise<EvidenceBundle> {
     const artifacts = await this.fetchArtifacts(since);
     const items = this.transformToEvidenceItems(artifacts);
-    return this.emitEvidenceBundle(items);
+    return await this.emitEvidenceBundle(items);
   }
 
   // -------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------
 
-  private buildImmutabilityProof(items: EvidenceItem[]): ImmutabilityProof {
-    const chain: HashChainLink[] = [];
-    let previousHash: string | null = null;
-
-    for (const item of items) {
-      const content = JSON.stringify(item);
-      const hash = createHash("sha256").update(content).digest("hex");
-      const link: HashChainLink = {
-        hash,
-        previousHash,
-        timestamp: new Date().toISOString(),
-      };
-      chain.push(link);
-      previousHash = hash;
+  private async loadKernel(): Promise<{ sealBundle: (bundle: unknown) => unknown }> {
+    let kernel: unknown;
+    try {
+      kernel = await import("@guardspine/kernel");
+    } catch (err) {
+      throw new Error(
+        "@guardspine/kernel is required for sealing. Install with: npm install @guardspine/kernel",
+      );
     }
+    if (
+      typeof kernel !== "object"
+      || kernel === null
+      || !("sealBundle" in kernel)
+      || typeof (kernel as { sealBundle?: unknown }).sealBundle !== "function"
+    ) {
+      throw new Error("@guardspine/kernel does not expose sealBundle()");
+    }
+    return kernel as { sealBundle: (bundle: unknown) => unknown };
+  }
 
-    const rootHash = createHash("sha256")
-      .update(chain.map((l) => l.hash).join(""))
-      .digest("hex");
-
+  private toKernelItem(item: EvidenceItem, index: number): Record<string, unknown> {
     return {
-      version: "0.2.0",
-      algorithm: "sha256",
-      chain,
-      rootHash,
+      item_id: item.id || `item-${index}`,
+      content_type: `guardspine/connector/${item.kind}`,
+      content: {
+        source: item.source,
+        kind: item.kind,
+        created_at: item.createdAt,
+        payload: item.payload,
+        tags: item.tags ?? [],
+      },
+    };
+  }
+
+  private toProof(chain: unknown[], rootHash: string): ImmutabilityProof {
+    return {
+      hash_chain: chain as ImmutabilityProof["hash_chain"],
+      root_hash: rootHash,
     };
   }
 
